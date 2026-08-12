@@ -1,0 +1,9 @@
+ws_shared/build/
+ws_shared/install/
+ws_shared/log/
+ws_shared/src/
+ws_shared/*.csv
+ws_shared/flight_*.csv
+ws_shared/PS2-RL/.venv/
+__pycache__/
+*.pyc
