@@ -1,0 +1,6 @@
+[submodule "ws_shared/PS2-RL"]
+	path = ws_shared/PS2-RL
+	url = https://github.com/azizanlab/PS2-RL.git
+[submodule "ws_shared/dual_stage_rl"]
+	path = ws_shared/dual_stage_rl
+	url = https://github.com/saluv1/dual_stage_rl.git

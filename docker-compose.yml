@@ -1,0 +1,38 @@
+services:
+  px4sitl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PX4_VERSION: v1.16.0
+        PX4_MSGS_BRANCH: release/1.16
+        USERNAME: dev
+        UID: "1000"
+        GID: "1000"
+    image: px4-jazzy:1.16
+    container_name: px4sitl
+    # Host networking: QGC on the host auto-connects to SITL on UDP 14550.
+    network_mode: host
+    ipc: host
+    # NVIDIA GPU access for Gazebo rendering (RTX 4050).
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    volumes:
+      # X socket so the Gazebo GUI draws on your host display.
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Your own ROS 2 packages live here and survive image rebuilds.
+      - ./ws_shared:/home/dev/ws_shared:rw
+    # Keep the container alive so you can exec into it with separate shells.
+    stdin_open: true
+    tty: true
+    command: /bin/bash
