@@ -28,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ---- CPU JAX + policy deps for DEPLOYMENT (system python 3.12, which has rclpy) ----
 # The bridge runs here (rclpy is compiled for 3.12 and cannot load in the 3.10 venv).
 # CPU build on purpose: inference is single-state, latency-bound; matches jax_platform=cpu.
-RUN python3 -m pip install --break-system-packages --no-cache-dir \
+RUN python3 -m pip install --break-system-packages --no-cache-dir --ignore-installed \
         "jax==0.6.2" "jaxlib==0.6.2" \
         "numpy==1.26.4" "scipy==1.14.1" "qpax==0.0.9"
 
