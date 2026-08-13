@@ -1,0 +1,6 @@
+/ps2rl_px4_bridge:
+  ros__parameters:
+    thrust_model: "quadratic"
+    thrust_k2: 14.574044
+    thrust_k1: 0.807446
+    thrust_k0: 1.489934
