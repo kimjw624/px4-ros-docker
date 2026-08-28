@@ -406,6 +406,47 @@ Keep each deployed policy in a separate directory:
 |`nominal_cil_learned`|`checkpoints/deployed_ps2/quadrotor_ps2_learned`|26D|on, learned backup|
 |`delay_cil_<run>`|choose after training completes|saved delay layout|on, saved CIL config|
 
+The files required by the first three completed workflows are committed in the
+PS2-RL submodule. A fresh recursive clone therefore does not need a separate
+policy download. The newly published comparison directories contain only the
+small deployment files needed by the runner:
+
+```
+checkpoints/sitl_delay_comparison/policies/
+├── nominal_no_delay_no_cil/
+│   ├── configs.json
+│   └── final_weights.pkl
+└── delay_d5_j2_h5_seed4/
+    ├── configs.json
+    ├── summary.json
+    ├── best_weights.pkl
+    └── final_weights.pkl
+```
+
+Training histories, trajectories, metrics, and `training_artifacts/` remain
+git-ignored. The existing nominal-CIL actor and its learned backup are already
+tracked under `checkpoints/deployed_ps2/` and `checkpoints/deployed_sa/`.
+
+After cloning or pulling, update the submodules on the host:
+
+```
+cd ~/px4-ros-docker
+git submodule update --init --recursive
+```
+
+Then verify the required policy files inside the container:
+
+```
+cd ~/ws_shared/PS2-RL
+test -f checkpoints/sitl_delay_comparison/policies/nominal_no_delay_no_cil/configs.json
+test -f checkpoints/sitl_delay_comparison/policies/nominal_no_delay_no_cil/final_weights.pkl
+test -f checkpoints/sitl_delay_comparison/policies/delay_d5_j2_h5_seed4/configs.json
+test -f checkpoints/sitl_delay_comparison/policies/delay_d5_j2_h5_seed4/final_weights.pkl
+test -f checkpoints/deployed_ps2/quadrotor_ps2_learned/best_weights.pkl
+test -f checkpoints/deployed_sa/quadrotor_sa/best_weights.pkl
+echo "Required SITL policies: OK"
+```
+
 `configs.json` is authoritative. A vanilla deployment must contain
 `use_projection=false`; a CIL deployment must contain `use_projection=true`.
 Do not disable CIL on the already CIL-fine-tuned actor and call it a vanilla
@@ -599,27 +640,20 @@ weights and experiment outputs are large and local-only.
 
 The parent `ws_shared/.gitignore` excludes colcon outputs, timestamped SITL
 experiments, CSV logs, and generated plots. Ignore rules do not cross a
-submodule boundary, so check `PS2-RL` separately:
+submodule boundary. PS2-RL ignores arbitrary outputs/checkpoints but explicitly
+allows only the small policy files required by the documented SITL commands.
+Check the relevant rules with:
 
 ```
 cd ~/px4-ros-docker/ws_shared/PS2-RL
-git check-ignore -v outputs checkpoints .venv 2>/dev/null || true
+git check-ignore -v outputs .venv \
+  checkpoints/sitl_delay_comparison/policies/delay_d5_j2_h5_seed4/training_artifacts \
+  2>/dev/null || true
 ```
 
-If `outputs/` or `checkpoints/` is not already ignored, add these entries to
-the existing `PS2-RL/.gitignore` before committing source changes there:
-
-```
-/outputs/
-/checkpoints/
-/.venv/
-**/__pycache__/
-*.py[cod]
-```
-
-Do not commit `.pkl`, `.npz`, training histories, metrics, or SITL experiment
-directories. Commit lightweight source/config documentation only when it is
-needed for reproducibility.
+Do not commit arbitrary `.pkl`, `.npz`, training histories, metrics, or SITL
+experiment directories. The allowlisted deployment weights above are the only
+checkpoint exceptions and are committed deliberately for reproducibility.
 
 ### 1. Commit the bridge submodule
 
@@ -647,12 +681,32 @@ git commit -m "Add delay-aware SITL policy experiments"
 git push origin "$(git branch --show-current)"
 ```
 
-### 2. Commit PS2-RL only when its source changes are ready
+### 2. Publish the required PS2-RL policies without the UE source changes
 
-The delay bridge requires the matching `use_projection` and delay-observation
-support in PS2-RL. If those source changes are not already pushed, commit them
-in the PS2-RL repository on a branch you control. Review `git status --short`
-and stage explicit source files only; do not stage checkpoints or outputs.
+The currently documented SITL commands require two new comparison-policy
+directories. Stage only the `.gitignore` allowlist and the exact deployment
+files; leave UE-BCBF source changes unstaged:
+
+```
+cd ~/px4-ros-docker/ws_shared/PS2-RL
+
+git add \
+  .gitignore \
+  checkpoints/sitl_delay_comparison/policies/nominal_no_delay_no_cil/configs.json \
+  checkpoints/sitl_delay_comparison/policies/nominal_no_delay_no_cil/final_weights.pkl \
+  checkpoints/sitl_delay_comparison/policies/delay_d5_j2_h5_seed4/configs.json \
+  checkpoints/sitl_delay_comparison/policies/delay_d5_j2_h5_seed4/summary.json \
+  checkpoints/sitl_delay_comparison/policies/delay_d5_j2_h5_seed4/best_weights.pkl \
+  checkpoints/sitl_delay_comparison/policies/delay_d5_j2_h5_seed4/final_weights.pkl
+
+git diff --cached --check
+git diff --cached --stat
+git commit -m "Publish SITL comparison policies"
+git push origin "$(git branch --show-current)"
+```
+
+Do not stage `training_artifacts/` or any UE-BCBF source/evaluation files. Those
+belong in later coherent commits after the ongoing work is ready.
 
 After pushing, verify that the current submodule commit exists on its remote:
 
@@ -664,9 +718,8 @@ git branch --show-current
 git remote -v
 ```
 
-If this submodule still points to a read-only upstream remote, push the source
-changes to a fork first. The parent repository must not point to a commit that
-other machines cannot fetch.
+The parent repository must not point to a commit that other machines cannot
+fetch.
 
 ### 3. Commit the parent repository last
 
@@ -685,8 +738,8 @@ git add \
   ws_shared/PS2RL_SITL_final.md \
   ws_shared/dual_stage_rl
 
-# Uncomment this only if a PS2-RL source commit was pushed in step 2.
-# git add ws_shared/PS2-RL
+# The published-policy commit from step 2 must also be recorded.
+git add ws_shared/PS2-RL
 
 git diff --cached --check
 git diff --cached --stat
