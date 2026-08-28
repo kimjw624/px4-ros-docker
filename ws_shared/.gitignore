@@ -1,0 +1,20 @@
+# ROS 2 / colcon generated workspaces
+/build/
+/install/
+/log/
+/src/
+
+# Organized SITL experiment outputs
+/experiments/
+/policy_runs/
+/experiments*.zip
+/flight_*.csv
+/poke_test.csv
+/trajectory*.png
+
+# Local Python/editor artifacts
+**/__pycache__/
+*.py[cod]
+/.pytest_cache/
+/.vscode/
+.DS_Store

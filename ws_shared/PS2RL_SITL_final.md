@@ -48,6 +48,7 @@ px4-ros-docker/
     ├── setup_px4_powerloop.sh  # PX4 airframe/model/DDS edits (idempotent)
     ├── poke_test.py            # frame/sign test
     ├── thrust_fit_1kg.yaml     # calibrated thrust coefficients
+    ├── experiments/            # timestamped SITL results (local, git-ignored)
     ├── PS2-RL/                 # submodule (upstream, read-only)
     └── dual_stage_rl/          # submodule (yours; bridge in SITL_src/ps2rl_px4_bridge)
 ```
@@ -369,6 +370,121 @@ ros2 launch ps2rl_px4_bridge ps2rl_sitl.launch.py
 
 auto_start runs BOOT->ARM->TAKEOFF->LINEUP->DASH->POLICY->RECOVER->LAND. Healthy: obs_dim=26, handover dev pos~0.01/speed~0.15/tilt~3deg, 106 steps, mean sim dt~20 ms, latency~4 ms, 0% thrust saturation, position RMS~2 m.
 
+The command above is the old direct-launch workflow for the nominal PS2-RL
+policy fine-tuned with CIL. It is still supported, but it writes the CSV to
+`/tmp`. Use the organized experiment commands below for policy comparisons.
+
+### Organized policy comparison runs
+
+The experiment runner keeps every flight in its own timestamped directory and
+does not mix the nominal and delay-policy outputs:
+
+```
+~/ws_shared/experiments/ps2rl_sitl/<timestamp>-<label>/
+├── run_metadata.json       # command, checkpoint path/hash, source commit
+├── bridge_config.yaml      # exact bridge config used for this run
+├── bridge.log              # complete ROS/bridge terminal output
+├── flight.csv              # state, reference, raw/safe action, CIL diagnostics
+├── analysis.txt
+├── plot.log
+├── policy/                 # configs.json + summary.json snapshot when present
+└── plots/
+    ├── trajectory.png
+    └── trajectory_cil.png
+```
+
+The whole `experiments/` directory is local and git-ignored. After LAND, press
+Ctrl-C once in the bridge terminal. The wrapper then stops `ros2 launch`, runs
+the analysis/plot scripts, and prints the saved experiment directory.
+
+Keep each deployed policy in a separate directory:
+
+|Label|Policy directory|Observation|CIL/QP|
+|---|---|---|---|
+|`nominal_no_delay_no_cil`|`checkpoints/sitl_delay_comparison/policies/nominal_no_delay_no_cil`|26D|off|
+|`delay_d5_j2_h5_seed4`|`checkpoints/sitl_delay_comparison/policies/delay_d5_j2_h5_seed4`|46D (5 previous commands)|off|
+|`nominal_cil_learned`|`checkpoints/deployed_ps2/quadrotor_ps2_learned`|26D|on, learned backup|
+|`delay_cil_<run>`|choose after training completes|saved delay layout|on, saved CIL config|
+
+`configs.json` is authoritative. A vanilla deployment must contain
+`use_projection=false`; a CIL deployment must contain `use_projection=true`.
+Do not disable CIL on the already CIL-fine-tuned actor and call it a vanilla
+baseline. The vanilla nominal baseline uses the original pre-CIL checkpoint.
+
+All commands below run in Terminal 3, outside the Python 3.10 training venv,
+with DDS and a freshly restarted `gz_x500_powerloop` already running:
+
+```
+deactivate 2>/dev/null || true
+source /opt/ros/jazzy/setup.bash
+source ~/ws_shared/install/setup.bash
+```
+
+#### Vanilla nominal — no delay, no CIL
+
+This is the controlled baseline for testing whether delay/history training
+improves SITL tracking:
+
+```
+python3 ~/ws_shared/dual_stage_rl/SITL_src/ps2rl_px4_bridge/run_sitl_experiment.py \
+  --label nominal_no_delay_no_cil \
+  --config ~/ws_shared/dual_stage_rl/SITL_src/ps2rl_px4_bridge/config/bridge_x500_powerloop.yaml \
+  --run-dir ~/ws_shared/PS2-RL/checkpoints/sitl_delay_comparison/policies/nominal_no_delay_no_cil \
+  --checkpoint final
+```
+
+Expected startup/result diagnostics: `obs_dim=26`, no delay/history, and
+`proj_norm=0`, `slack=0` throughout the policy segment.
+
+#### Vanilla delay-trained — delay/history, no CIL
+
+The current delay policy was trained with actuator delay `5 +/- 2` steps and a
+five-command history:
+
+```
+python3 ~/ws_shared/dual_stage_rl/SITL_src/ps2rl_px4_bridge/run_sitl_experiment.py \
+  --label delay_d5_j2_h5_seed4 \
+  --config ~/ws_shared/dual_stage_rl/SITL_src/ps2rl_px4_bridge/config/bridge_x500_powerloop_delay.yaml \
+  --run-dir ~/ws_shared/PS2-RL/checkpoints/sitl_delay_comparison/policies/delay_d5_j2_h5_seed4 \
+  --checkpoint final
+```
+
+Expected startup/result diagnostics: `obs_dim=46`, `hist_action=5`, and
+`proj_norm=0`, `slack=0` throughout the policy segment.
+
+#### Nominal PS2-RL — no delay, CIL enabled
+
+This is the existing actor fine-tuned with CIL and a learned backup policy. It
+is a separate safety/controller experiment, not the vanilla nominal baseline:
+
+```
+python3 ~/ws_shared/dual_stage_rl/SITL_src/ps2rl_px4_bridge/run_sitl_experiment.py \
+  --label nominal_cil_learned \
+  --config ~/ws_shared/dual_stage_rl/SITL_src/ps2rl_px4_bridge/config/bridge_x500_powerloop.yaml \
+  --run-dir ~/ws_shared/PS2-RL/checkpoints/deployed_ps2/quadrotor_ps2_learned \
+  --checkpoint best
+```
+
+Expected startup diagnostics: `obs_dim=26`, `backup=learned`. Nonzero
+`proj_norm` means the CIL/QP changed the raw actor command.
+
+#### Future delay-trained PS2-RL — delay/history, CIL enabled
+
+Run this only after training finishes and the new run directory contains its
+own `configs.json`, selected weights, and any required backup-policy weights:
+
+```
+python3 ~/ws_shared/dual_stage_rl/SITL_src/ps2rl_px4_bridge/run_sitl_experiment.py \
+  --label delay_cil_<run> \
+  --config ~/ws_shared/dual_stage_rl/SITL_src/ps2rl_px4_bridge/config/bridge_x500_powerloop_delay.yaml \
+  --run-dir ~/ws_shared/PS2-RL/checkpoints/sitl_delay_comparison/policies/<delay-cil-run-directory> \
+  --checkpoint best
+```
+
+Before flying, check that its `configs.json` reports the expected delay/history
+layout and `use_projection=true`. Replace both angle-bracket placeholders with
+the final training-run name. Do not reuse the current vanilla delay directory.
+
 ### Analyze
 
 ```
@@ -474,13 +590,132 @@ cd ~/PX4-Autopilot && make px4_sitl gz_x500_powerloop
 
 ---
 
+# GitHub update workflow
+
+There are three separate Git repositories: `dual_stage_rl`, `PS2-RL`, and the
+parent `px4-ros-docker`. Commit a submodule first, push that commit, then update
+the submodule pointer in the parent. Never use `git add .` here because policy
+weights and experiment outputs are large and local-only.
+
+The parent `ws_shared/.gitignore` excludes colcon outputs, timestamped SITL
+experiments, CSV logs, and generated plots. Ignore rules do not cross a
+submodule boundary, so check `PS2-RL` separately:
+
+```
+cd ~/px4-ros-docker/ws_shared/PS2-RL
+git check-ignore -v outputs checkpoints .venv 2>/dev/null || true
+```
+
+If `outputs/` or `checkpoints/` is not already ignored, add these entries to
+the existing `PS2-RL/.gitignore` before committing source changes there:
+
+```
+/outputs/
+/checkpoints/
+/.venv/
+**/__pycache__/
+*.py[cod]
+```
+
+Do not commit `.pkl`, `.npz`, training histories, metrics, or SITL experiment
+directories. Commit lightweight source/config documentation only when it is
+needed for reproducibility.
+
+### 1. Commit the bridge submodule
+
+Run on the host:
+
+```
+cd ~/px4-ros-docker/ws_shared/dual_stage_rl
+git branch --show-current
+git remote -v
+git status --short
+git diff --check
+
+git add \
+  SITL_src/ps2rl_px4_bridge/.gitignore \
+  SITL_src/ps2rl_px4_bridge/README.md \
+  SITL_src/ps2rl_px4_bridge/config/bridge_x500_powerloop_delay.yaml \
+  SITL_src/ps2rl_px4_bridge/ps2rl_px4_bridge/bridge_node.py \
+  SITL_src/ps2rl_px4_bridge/ps2rl_px4_bridge/policy_runner.py \
+  SITL_src/ps2rl_px4_bridge/run_sitl_experiment.py \
+  SITL_src/ps2rl_px4_bridge/test/test_policy_runner_observation.py
+
+git diff --cached --check
+git diff --cached --stat
+git commit -m "Add delay-aware SITL policy experiments"
+git push origin "$(git branch --show-current)"
+```
+
+### 2. Commit PS2-RL only when its source changes are ready
+
+The delay bridge requires the matching `use_projection` and delay-observation
+support in PS2-RL. If those source changes are not already pushed, commit them
+in the PS2-RL repository on a branch you control. Review `git status --short`
+and stage explicit source files only; do not stage checkpoints or outputs.
+
+After pushing, verify that the current submodule commit exists on its remote:
+
+```
+cd ~/px4-ros-docker/ws_shared/PS2-RL
+git status --short
+git rev-parse HEAD
+git branch --show-current
+git remote -v
+```
+
+If this submodule still points to a read-only upstream remote, push the source
+changes to a fork first. The parent repository must not point to a commit that
+other machines cannot fetch.
+
+### 3. Commit the parent repository last
+
+```
+cd ~/px4-ros-docker
+git status --short
+
+# If generated files were committed previously, remove only their Git index
+# entries. --cached leaves the local files on disk.
+git rm -r --cached --ignore-unmatch \
+  ws_shared/build ws_shared/install ws_shared/log ws_shared/src \
+  ws_shared/experiments ws_shared/trajectory.png ws_shared/trajectory_cil.png
+
+git add \
+  ws_shared/.gitignore \
+  ws_shared/PS2RL_SITL_final.md \
+  ws_shared/dual_stage_rl
+
+# Uncomment this only if a PS2-RL source commit was pushed in step 2.
+# git add ws_shared/PS2-RL
+
+git diff --cached --check
+git diff --cached --stat
+git diff --cached --submodule=log
+git commit -m "Document organized PS2-RL SITL comparisons"
+git push origin "$(git branch --show-current)"
+```
+
+On a clean machine, verify that both recorded submodule commits are fetchable:
+
+```
+git clone --recursive https://github.com/kimjw624/px4-ros-docker.git px4-ros-docker-check
+cd px4-ros-docker-check
+git submodule status --recursive
+```
+
+---
+
 # Persistence summary
 
 - Image (Dockerfile): PX4 v1.16 built from source, ROS, Gazebo, and CPU JAX (jax/jaxlib/scipy/qpax via pip --ignore-installed), plus auto-source in .bashrc.
-- ws_shared (bind-mount, persistent): PS2-RL + dual_stage_rl submodules, bootstrap.sh, setup_px4_powerloop.sh, poke_test.py, thrust_fit_1kg.yaml, this md.
+- ws_shared (bind-mount, persistent): PS2-RL + dual_stage_rl submodules, bootstrap.sh, setup_px4_powerloop.sh, poke_test.py, thrust_fit_1kg.yaml, this md, and git-ignored experiment outputs.
 - Per fresh container: `bash ~/ws_shared/bootstrap.sh` (idempotent) — applies PX4 mods, rebuilds PX4, builds the bridge.
 - Editing dual_stage_rl (yours): cd into the submodule, `git checkout main` first, commit + push there, then bump the pointer in the parent repo.
 
 # Current status
 
-Stable, complete powerloop flight (position RMS ~2 m) — recognizable but loose; undershoots the top (~3.0 vs 3.5 m). Integration is correct (policy, frames, timing, thrust map, entry), 0% thrust saturation. Remaining: pitch rate-loop tuning to tighten tracking.
+The organized SITL workflow has been verified for the vanilla nominal policy
+without CIL, the vanilla delay-trained policy without CIL, and the nominal
+PS2-RL policy with learned-backup CIL. The next planned run is the delay-trained
+policy with CIL enabled after its training finishes. Keep vanilla-vs-vanilla
+tracking comparisons separate from CIL-vs-CIL safety comparisons.
